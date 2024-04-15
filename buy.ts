@@ -71,7 +71,9 @@ import {
 } from './constants';
 import BN from "bn.js";
 import {version} from './package.json'
+import {Db} from "./db";
 
+const db = new Db(logger)
 const solanaConnection = new Connection(RPC_ENDPOINT, {
   wsEndpoint: RPC_WEBSOCKET_ENDPOINT,
 });
@@ -95,7 +97,7 @@ let quoteMinPoolSizeAmount: TokenAmount;
 let quoteMaxPoolSizeAmount: TokenAmount;
 let processingToken: Boolean = false;
 let snipeList: string[] = [];
-let sellingTokenIntervals: Record<string, NodeJS.Timeout> = {};
+let sellingTokenTimers: Record<string, NodeJS.Timeout> = {};
 let boughtAmounts: { [key: string]: {solAmountSent: number, tokenAmountGain:BN|number, tokenPriceUsd: number } } = {};
 
 async function init(): Promise<void> {
@@ -252,6 +254,8 @@ export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStat
     }
   }
 
+  db.addToken(poolState.baseMint.toString())
+
   await buy(id, poolState);
 }
 
@@ -346,7 +350,7 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
           payerKey: wallet.publicKey,
           recentBlockhash: latestBlockhash.blockhash,
           instructions: [
-            ComputeBudgetProgram.setComputeUnitPrice({microLamports: 421197}),
+            ComputeBudgetProgram.setComputeUnitPrice({microLamports: 4211970}),
             ComputeBudgetProgram.setComputeUnitLimit({units: 101337}),
             createAssociatedTokenAccountIdempotentInstruction(
                 wallet.publicKey,
@@ -514,7 +518,7 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish)
         payerKey: wallet.publicKey,
         recentBlockhash: latestBlockhash.blockhash,
         instructions: [
-          ComputeBudgetProgram.setComputeUnitPrice({microLamports: 421197}),
+          ComputeBudgetProgram.setComputeUnitPrice({microLamports: 4211970}),
           ComputeBudgetProgram.setComputeUnitLimit({units: 101337}),
           ...innerTransaction.instructions,
           createCloseAccountInstruction(tokenAccount.address, wallet.publicKey, wallet.publicKey),
@@ -560,7 +564,7 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish)
     }
   } while (!sold && retries < MAX_SELL_RETRIES)
 
-  clearInterval(sellingTokenIntervals[mint.toString() as keyof typeof sellingTokenIntervals])
+  clearInterval(sellingTokenTimers[mint.toString() as keyof typeof sellingTokenTimers])
   processingToken = false;
 }
 
@@ -705,14 +709,14 @@ async function checkPriceAndSell(walletPublicKey:PublicKey, mintAddress:PublicKe
       logger.warn(`${mintAddress.toString()} - Take Profit triggered: ${currentTokenPrice} and ${boughtInfo?.tokenPriceUsd}. ${currentTokenPrice >= boughtInfo?.tokenPriceUsd * (100 + TAKE_PROFIT) / 100}`);
       await sell(walletPublicKey, mintAddress, amount);
     } else {
-      sellingTokenIntervals[mintAddress.toString()] = setTimeout(() => {
+      sellingTokenTimers[mintAddress.toString()] = setTimeout(() => {
         checkPriceAndSell(walletPublicKey, mintAddress, amount);
       }, CHECK_PRICE_INTERVAL_SECONDS * 1000);
     }
   } catch (error) {
     logger.error(error, 'Failed to fetch or process price:', );
 
-    sellingTokenIntervals[mintAddress.toString()] = setTimeout(() => {
+    sellingTokenTimers[mintAddress.toString()] = setTimeout(() => {
       checkPriceAndSell(walletPublicKey, mintAddress, amount);
     }, CHECK_PRICE_INTERVAL_SECONDS * 1000);
   }
