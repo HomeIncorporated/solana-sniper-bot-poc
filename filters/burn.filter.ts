@@ -10,7 +10,7 @@ export class BurnFilter implements Filter {
     try {
       const amount = await this.connection.getTokenSupply(poolKeys.lpMint, this.connection.commitment);
       const burned = amount.value.uiAmount === 0;
-      return { ok: burned, message: burned ? undefined : "Burned -> Creator didn't burn LP" };
+      return { ok: burned, message: burned ? undefined : `${poolKeys.baseMint} - Burned -> Creator didn't burn LP` };
     } catch (e: any) {
       if (e.code == -32602) {
         return { ok: true };

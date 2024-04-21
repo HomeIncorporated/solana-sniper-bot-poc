@@ -29,7 +29,7 @@ export class DefaultTransactionExecutor implements TransactionExecutor {
     });
   }
 
-  private async confirm(signature: string, latestBlockhash: BlockhashWithExpiryBlockHeight) {
+  async confirm(signature: string, latestBlockhash: BlockhashWithExpiryBlockHeight) {
     const confirmation = await this.connection.confirmTransaction(
       {
         signature,

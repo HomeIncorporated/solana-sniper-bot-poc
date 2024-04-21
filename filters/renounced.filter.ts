@@ -11,16 +11,16 @@ export class RenouncedFilter implements Filter {
     try {
       const accountInfo = await this.connection.getAccountInfo(poolKeys.baseMint, this.connection.commitment);
       if (!accountInfo?.data) {
-        return { ok: false, message: 'Renounced -> Failed to fetch account data' };
+        return { ok: false, message: `${poolKeys.baseMint.toString()} - Renounced -> Failed to fetch account data` };
       }
 
       const deserialize = MintLayout.decode(accountInfo.data);
       const renounced = deserialize.mintAuthorityOption === 0;
-      return { ok: renounced, message: renounced ? undefined : 'Renounced -> Creator can mint more tokens' };
+      return { ok: renounced, message: renounced ? undefined : `${poolKeys.baseMint.toString()} - Renounced -> Creator can mint more tokens` };
     } catch (e) {
-      logger.error({ mint: poolKeys.baseMint }, `Failed to check if mint is renounced`);
+      logger.error(`${poolKeys.baseMint.toString()} - Failed to check if mint is renounced`);
     }
 
-    return { ok: false, message: 'Renounced -> Failed to check if mint is renounced' };
+    return { ok: false, message: `${poolKeys.baseMint.toString()} - Renounced -> Failed to check if mint is renounced` };
   }
 }

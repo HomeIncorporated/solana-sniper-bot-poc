@@ -23,6 +23,12 @@ export const COMMITMENT_LEVEL: Commitment = retrieveEnvVariable('COMMITMENT_LEVE
 export const RPC_ENDPOINT = retrieveEnvVariable('RPC_ENDPOINT', logger);
 export const RPC_WEBSOCKET_ENDPOINT = retrieveEnvVariable('RPC_WEBSOCKET_ENDPOINT', logger);
 
+// jito connection and config
+export const JITO_BLOCK_ENGINE_URL = retrieveEnvVariable('JITO_BLOCK_ENGINE_URL', logger);
+export const JITO_API_PRIVATE_KEY = retrieveEnvVariable('JITO_API_PRIVATE_KEY', logger);
+export const JITO_BUNDLE_TRANSACTION_LIMIT = Number(retrieveEnvVariable('JITO_BUNDLE_TRANSACTION_LIMIT', logger));
+export const JITO_FEE_LAMPORTS = Number(retrieveEnvVariable('JITO_FEE_LAMPORTS', logger));
+
 // Bot
 export const LOG_LEVEL = retrieveEnvVariable('LOG_LEVEL', logger);
 export const ONE_TOKEN_AT_A_TIME = retrieveEnvVariable('ONE_TOKEN_AT_A_TIME', logger) === 'true';

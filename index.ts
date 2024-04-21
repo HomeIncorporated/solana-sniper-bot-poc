@@ -2,7 +2,7 @@ import { MarketCache, PoolCache } from './cache';
 import { Listeners } from './listeners';
 import { Connection, KeyedAccountInfo, Keypair } from '@solana/web3.js';
 import { LIQUIDITY_STATE_LAYOUT_V4, MARKET_STATE_LAYOUT_V3, Token, TokenAmount } from '@raydium-io/raydium-sdk';
-import { AccountLayout, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { AccountLayout, getAssociatedTokenAddressSync, RawAccount } from '@solana/spl-token';
 import { Bot, BotConfig } from './bot';
 import { DefaultTransactionExecutor, TransactionExecutor } from './transactions';
 import {
@@ -42,15 +42,20 @@ import {
   WARP_FEE,
   FILTER_CHECK_INTERVAL,
   FILTER_CHECK_DURATION,
-  CONSECUTIVE_FILTER_MATCHES,
+  CONSECUTIVE_FILTER_MATCHES, JITO_API_PRIVATE_KEY, JITO_BLOCK_ENGINE_URL,
 } from './helpers';
 import { version } from './package.json';
 import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
+import bs58 from 'bs58';
+import { searcherClient } from 'jito-ts/dist/sdk/block-engine/searcher';
 
 const connection = new Connection(RPC_ENDPOINT, {
   wsEndpoint: RPC_WEBSOCKET_ENDPOINT,
   commitment: COMMITMENT_LEVEL,
 });
+
+const jitoApiKeypair = Keypair.fromSecretKey(bs58.decode(JITO_API_PRIVATE_KEY))
+const jitoClient = searcherClient(JITO_BLOCK_ENGINE_URL, jitoApiKeypair);
 
 function printDetails(wallet: Keypair, quoteToken: Token, bot: Bot) {
   logger.info(`  
@@ -137,6 +142,11 @@ const runListener = async () => {
       txExecutor = new WarpTransactionExecutor(WARP_FEE);
       break;
     }
+    case 'jito': {
+      // do nothing
+      txExecutor = new DefaultTransactionExecutor(connection);
+      break;
+    }
     default: {
       txExecutor = new DefaultTransactionExecutor(connection);
       break;
@@ -174,7 +184,7 @@ const runListener = async () => {
     consecutiveMatchCount: CONSECUTIVE_FILTER_MATCHES,
   };
 
-  const bot = new Bot(connection, marketCache, poolCache, txExecutor, botConfig);
+  const bot = await new Bot(connection, marketCache, poolCache, txExecutor, botConfig, jitoClient);
   const valid = await bot.validate();
 
   if (!valid) {
@@ -218,7 +228,7 @@ const runListener = async () => {
       return;
     }
 
-    await bot.sell(updatedAccountInfo.accountId, accountData);
+    await bot.sell(updatedAccountInfo.accountId, accountData as RawAccount);
   });
 
   printDetails(wallet, quoteToken, bot);
