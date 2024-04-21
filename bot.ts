@@ -128,37 +128,27 @@ export class Bot {
     if (this.config.useSnipeList && !this.snipeListCache?.isInList(poolState.baseMint.toString())) {
       logger.debug(`${poolState.baseMint.toString()} - Skipping buy because token is not in a snipe list`);
       return;
-    } else {
-      logger.debug(`${poolState.baseMint.toString()} - not sniping...`);
     }
 
     if (this.config.autoBuyDelay > 0) {
       logger.debug(`${poolState.baseMint.toString()} - Waiting for ${this.config.autoBuyDelay} ms before buy`);
       await sleep(this.config.autoBuyDelay);
-    } else {
-      logger.debug(`${poolState.baseMint.toString()} - without auto buy delay...`);
     }
 
     if (this.config.oneTokenAtATime) {
       if (this.mutex.isLocked() || this.sellExecutionCount > 0) {
         logger.debug(`${poolState.baseMint.toString()} - Skipping buy because one token at a time is turned on and token is already being processed`);
         return;
-      } else {
-        logger.debug(`${poolState.baseMint.toString()} - no token is processing, start buying...`)
       }
 
       await this.mutex.acquire();
     }
 
     try {
-      logger.debug(`${poolState.baseMint.toString()} - tryng to get filters...`)
-
       const [market, mintAta] = await Promise.all([
         this.marketStorage.get(poolState.marketId.toString()),
         getAssociatedTokenAddress(poolState.baseMint, this.config.wallet.publicKey),
       ]);
-
-      logger.debug(`${poolState.baseMint.toString()} - got some market and mintAta info...`)
 
       const poolKeys: LiquidityPoolKeysV4 = createPoolKeys(accountId, poolState, market);
 
@@ -256,7 +246,10 @@ export class Bot {
       const market = await this.marketStorage.get(poolData.state.marketId.toString());
       const poolKeys: LiquidityPoolKeysV4 = createPoolKeys(new PublicKey(poolData.id), poolData.state, market);
 
-      await this.priceMatch(tokenAmountIn, poolKeys);
+      const shouldStopSelling = await this.priceMatch(tokenAmountIn, poolKeys);
+      if (shouldStopSelling) {
+        logger.info(`${rawAccount.mint} - received stop selling signal. Price dropped more than 90%`)
+      }
 
       for (let i = 0; i < this.config.maxSellRetries; i++) {
         try {
@@ -291,7 +284,7 @@ export class Bot {
             {
               mint: rawAccount.mint.toString(),
               signature: result.signature,
-              error: result.error,
+              error: result?.error,
             },
             `Error confirming sell tx`,
           );
@@ -435,7 +428,7 @@ export class Bot {
         this.connection.commitment,
       );
 
-      return { confirmed: !confirmation.value.err, signature };
+      return { confirmed: !confirmation.value.err, signature, error: confirmation.value.err };
     }
 
     // if not jito, send as usual
@@ -457,7 +450,7 @@ export class Bot {
       this.connection.commitment,
     );
 
-    return { confirmed: !confirmation.value.err, signature };
+    return { confirmed: !confirmation.value.err, signature, error: confirmation.value.err };
   }
 
   private async filterMatch(poolKeys: LiquidityPoolKeysV4) {
@@ -477,10 +470,7 @@ export class Bot {
           matchCount++;
 
           if (this.config.consecutiveMatchCount <= matchCount) {
-            logger.debug(
-              { mint: poolKeys.baseMint.toString() },
-              `Filter match ${matchCount}/${this.config.consecutiveMatchCount}`,
-            );
+            logger.debug(`${poolKeys.baseMint.toString()} - Filter match ${matchCount}/${this.config.consecutiveMatchCount}`);
             return true;
           }
         } else {
@@ -510,6 +500,9 @@ export class Bot {
     const lossAmount = new TokenAmount(this.config.quoteToken, lossFraction, true);
     const stopLoss = this.config.quoteAmount.subtract(lossAmount);
     const slippage = new Percent(this.config.sellSlippage, 100);
+
+    const stopSellingFraction = this.config.quoteAmount.mul(90).numerator.div(new BN(100)); // 90%
+    const stopSellingAmount = new TokenAmount(this.config.quoteToken, stopSellingFraction, true);
     let timesChecked = 0;
 
     do {
@@ -528,6 +521,10 @@ export class Bot {
         }).amountOut;
 
         logger.debug(`${poolKeys.baseMint.toString()} - Current: ${amountOut.toFixed()} | Take profit: ${takeProfit.toFixed()} | Stop loss: ${stopLoss.toFixed()}`,);
+
+        if (amountOut.lt(stopSellingAmount)) {
+          return true
+        }
 
         if (amountOut.lt(stopLoss)) {
           break;
