@@ -55,6 +55,7 @@ export const STOP_LOSS = Number(retrieveEnvVariable('STOP_LOSS', logger));
 export const PRICE_CHECK_INTERVAL = Number(retrieveEnvVariable('PRICE_CHECK_INTERVAL', logger));
 export const PRICE_CHECK_DURATION = Number(retrieveEnvVariable('PRICE_CHECK_DURATION', logger));
 export const SELL_SLIPPAGE = Number(retrieveEnvVariable('SELL_SLIPPAGE', logger));
+export const SKIP_SELLING_IF_LOST_90PERCENT = retrieveEnvVariable('SKIP_SELLING_IF_LOST_90PERCENT', logger) === 'true';
 
 // Filters
 export const FILTER_CHECK_INTERVAL = Number(retrieveEnvVariable('FILTER_CHECK_INTERVAL', logger));

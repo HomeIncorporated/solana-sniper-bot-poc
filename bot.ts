@@ -25,6 +25,7 @@ import {
   JITO_FEE_LAMPORTS,
   logger,
   NETWORK,
+  SKIP_SELLING_IF_LOST_90PERCENT,
   sleep,
   TRANSACTION_EXECUTOR,
 } from './helpers';
@@ -371,18 +372,7 @@ export class Bot {
     };
 
     if (this.isJito) {
-      logger.debug('Executing jito transaction...');
-
-      let isLeaderSlot = false;
-      while (!isLeaderSlot) {
-        let nextLeader = await this.jitoClient.getNextScheduledLeader();
-        let slotsTotal = nextLeader.nextLeaderSlot - nextLeader.currentSlot;
-        isLeaderSlot = slotsTotal <= 3;
-        if (!isLeaderSlot) {
-          await new Promise(r => setTimeout(r, 500));
-          logger.trace(`Next jito leader slot in ${slotsTotal} slots`);
-        }
-      }
+      logger.debug(`Executing Jito ${direction} transaction...`);
 
       let latestBlockhash = await this.connection.getLatestBlockhash();
       const messageV0 = getTransactionSwapMessage(direction, latestBlockhash, wallet);
@@ -413,12 +403,12 @@ export class Bot {
       );
 
       if (isError(bundle)) {
-        logger.error({ bundle }, `add tip tx to jito bundle error: ${bundle.message}`);
+        logger.error({ bundle }, `Add tip tx to Jito bundle error: ${bundle.message}`);
         throw bundle;
       }
 
       const resp = await this.jitoClient.sendBundle(bundles[0]);
-      logger.debug(`sent jito bundle id: ${resp}`);
+      logger.debug(`Sent Jito bundle id: ${resp}`);
       logger.debug({ signature }, 'Confirming transaction...');
 
       const confirmation = await this.connection.confirmTransaction(
@@ -502,9 +492,6 @@ export class Bot {
     const lossAmount = new TokenAmount(this.config.quoteToken, lossFraction, true);
     const stopLoss = this.config.quoteAmount.subtract(lossAmount);
     const slippage = new Percent(this.config.sellSlippage, 100);
-
-    const stopSellingFraction = this.config.quoteAmount.mul(90).numerator.div(new BN(100)); // 90%
-    const stopSellingAmount = new TokenAmount(this.config.quoteToken, stopSellingFraction, true);
     let timesChecked = 0;
 
     do {
@@ -524,8 +511,12 @@ export class Bot {
 
         logger.debug(`${poolKeys.baseMint.toString()} - Current: ${amountOut.toFixed()} | Take profit: ${takeProfit.toFixed()} | Stop loss: ${stopLoss.toFixed()}`,);
 
-        if (amountOut.lt(stopSellingAmount)) {
-          return true
+        if (SKIP_SELLING_IF_LOST_90PERCENT) {
+          const stopSellingFraction = this.config.quoteAmount.mul(90).numerator.div(new BN(100)); // 90%
+          const stopSellingAmount = new TokenAmount(this.config.quoteToken, stopSellingFraction, true);
+          if (amountOut.lt(stopSellingAmount)) {
+            return true
+          }
         }
 
         if (amountOut.lt(stopLoss)) {
