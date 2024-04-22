@@ -1,5 +1,4 @@
 import {
-  BlockhashWithExpiryBlockHeight,
   ComputeBudgetProgram,
   Connection,
   Keypair,
@@ -19,23 +18,11 @@ import { Liquidity, LiquidityPoolKeysV4, LiquidityStateV4, Percent, Token, Token
 import { MarketCache, PoolCache, SnipeListCache } from './cache';
 import { PoolFilters } from './filters';
 import { TransactionExecutor } from './transactions';
-import {
-  createPoolKeys,
-  JITO_BUNDLE_TRANSACTION_LIMIT,
-  JITO_FEE_LAMPORTS,
-  logger,
-  NETWORK,
-  SKIP_SELLING_IF_LOST_90PERCENT,
-  sleep,
-  TRANSACTION_EXECUTOR,
-} from './helpers';
+import { createPoolKeys, logger, NETWORK, sleep } from './helpers';
 import { Mutex } from 'async-mutex';
 import BN from 'bn.js';
 import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
-import bs58 from 'bs58';
-import { Bundle } from 'jito-ts/dist/sdk/block-engine/types';
-import { isError } from 'jito-ts/dist/sdk/block-engine/utils';
-import { SearcherClient } from 'jito-ts/dist/sdk/block-engine/searcher';
+import { JitoTransactionExecutor } from './transactions/jito-rpc-transaction-executor';
 
 export interface BotConfig {
   wallet: Keypair;
@@ -78,7 +65,6 @@ export class Bot {
   private sellExecutionCount = 0;
   public readonly isWarp: boolean = false;
   public readonly isJito: boolean = false;
-  tipAccounts: string[];
 
   constructor(
     private readonly connection: Connection,
@@ -86,12 +72,9 @@ export class Bot {
     private readonly poolStorage: PoolCache,
     private readonly txExecutor: TransactionExecutor,
     readonly config: BotConfig,
-    private readonly jitoClient: SearcherClient,
   ) {
     this.isWarp = txExecutor instanceof WarpTransactionExecutor;
-    this.isJito = TRANSACTION_EXECUTOR === 'jito';
-    this.tipAccounts = [];
-    this.getJitoTipAccounts();
+    this.isJito = txExecutor instanceof JitoTransactionExecutor;
 
     this.mutex = new Mutex();
     this.poolFilters = new PoolFilters(connection, {
@@ -104,10 +87,6 @@ export class Bot {
       this.snipeListCache = new SnipeListCache();
       this.snipeListCache.init();
     }
-  }
-
-  async getJitoTipAccounts() {
-    this.tipAccounts = await this.jitoClient.getTipAccounts();
   }
 
   async validate() {
@@ -124,21 +103,24 @@ export class Bot {
   }
 
   public async buy(accountId: PublicKey, poolState: LiquidityStateV4) {
-    logger.trace(`${poolState.baseMint.toString()} - Processing new pool...`);
+    logger.trace({ mint: poolState.baseMint }, `Processing new pool...`);
 
     if (this.config.useSnipeList && !this.snipeListCache?.isInList(poolState.baseMint.toString())) {
-      logger.debug(`${poolState.baseMint.toString()} - Skipping buy because token is not in a snipe list`);
+      logger.debug({ mint: poolState.baseMint.toString() }, `Skipping buy because token is not in a snipe list`);
       return;
     }
 
     if (this.config.autoBuyDelay > 0) {
-      logger.debug(`${poolState.baseMint.toString()} - Waiting for ${this.config.autoBuyDelay} ms before buy`);
+      logger.debug({ mint: poolState.baseMint }, `Waiting for ${this.config.autoBuyDelay} ms before buy`);
       await sleep(this.config.autoBuyDelay);
     }
 
     if (this.config.oneTokenAtATime) {
       if (this.mutex.isLocked() || this.sellExecutionCount > 0) {
-        logger.debug(`${poolState.baseMint.toString()} - Skipping buy because one token at a time is turned on and token is already being processed`);
+        logger.debug(
+          { mint: poolState.baseMint.toString() },
+          `Skipping buy because one token at a time is turned on and token is already being processed`,
+        );
         return;
       }
 
@@ -150,14 +132,13 @@ export class Bot {
         this.marketStorage.get(poolState.marketId.toString()),
         getAssociatedTokenAddress(poolState.baseMint, this.config.wallet.publicKey),
       ]);
-
       const poolKeys: LiquidityPoolKeysV4 = createPoolKeys(accountId, poolState, market);
 
       if (!this.config.useSnipeList) {
         const match = await this.filterMatch(poolKeys);
 
         if (!match) {
-          logger.trace(`${poolKeys.baseMint.toString()} - Skipping buy because pool doesn't match filters`);
+          logger.trace({ mint: poolKeys.baseMint.toString() }, `Skipping buy because pool doesn't match filters`);
           return;
         }
       }
@@ -184,7 +165,6 @@ export class Bot {
           if (result.confirmed) {
             logger.info(
               {
-                dex: `https://dexscreener.com/solana/${poolKeys.baseMint.toString()}?maker=${this.config.wallet.publicKey}`,
                 mint: poolState.baseMint.toString(),
                 signature: result.signature,
                 url: `https://solscan.io/tx/${result.signature}?cluster=${NETWORK}`,
@@ -240,23 +220,21 @@ export class Bot {
       }
 
       if (this.config.autoSellDelay > 0) {
-        logger.debug(`${rawAccount.mint} - Waiting for ${this.config.autoSellDelay} ms before sell`);
+        logger.debug({ mint: rawAccount.mint }, `Waiting for ${this.config.autoSellDelay} ms before sell`);
         await sleep(this.config.autoSellDelay);
       }
 
       const market = await this.marketStorage.get(poolData.state.marketId.toString());
       const poolKeys: LiquidityPoolKeysV4 = createPoolKeys(new PublicKey(poolData.id), poolData.state, market);
 
-      const shouldStopSelling = await this.priceMatch(tokenAmountIn, poolKeys);
-      if (shouldStopSelling) {
-        logger.info(`${rawAccount.mint} - received stop selling signal. Price dropped more than 90%`)
-        this.sellExecutionCount--;
-        return
-      }
+      await this.priceMatch(tokenAmountIn, poolKeys);
 
       for (let i = 0; i < this.config.maxSellRetries; i++) {
         try {
-          logger.info(`${rawAccount.mint} - Send sell transaction attempt: ${i + 1}/${this.config.maxSellRetries}`,);
+          logger.info(
+            { mint: rawAccount.mint },
+            `Send sell transaction attempt: ${i + 1}/${this.config.maxSellRetries}`,
+          );
 
           const result = await this.swap(
             poolKeys,
@@ -287,7 +265,7 @@ export class Bot {
             {
               mint: rawAccount.mint.toString(),
               signature: result.signature,
-              error: result?.error,
+              error: result.error,
             },
             `Error confirming sell tx`,
           );
@@ -330,6 +308,7 @@ export class Bot {
       slippage: slippagePercent,
     });
 
+    const latestBlockhash = await this.connection.getLatestBlockhash();
     const { innerTransaction } = Liquidity.makeSwapFixedInInstruction(
       {
         poolKeys: poolKeys,
@@ -344,105 +323,35 @@ export class Bot {
       poolKeys.version,
     );
 
-    const getTransactionSwapMessage = (direction: 'buy' | 'sell', latestBlockhash: BlockhashWithExpiryBlockHeight, wallet: Keypair) => {
-      return new TransactionMessage({
-        payerKey: wallet.publicKey,
-        recentBlockhash: latestBlockhash.blockhash,
-        instructions: [
-          ...(this.isWarp
-            ? []
-            : [
-              ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.config.unitPrice }),
-              ComputeBudgetProgram.setComputeUnitLimit({ units: this.config.unitLimit }),
-            ]),
-          ...(direction === 'buy'
-            ? [
-              createAssociatedTokenAccountIdempotentInstruction(
-                wallet.publicKey,
-                ataOut,
-                wallet.publicKey,
-                tokenOut.mint,
-              ),
-            ]
-            : []),
-          ...innerTransaction.instructions,
-          ...(direction === 'sell' ? [createCloseAccountInstruction(ataIn, wallet.publicKey, wallet.publicKey)] : []),
-        ],
-      }).compileToV0Message();
-    };
+    const messageV0 = new TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: [
+        ...(this.isWarp || this.isJito
+          ? []
+          : [
+            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.config.unitPrice }),
+            ComputeBudgetProgram.setComputeUnitLimit({ units: this.config.unitLimit }),
+          ]),
+        ...(direction === 'buy'
+          ? [
+            createAssociatedTokenAccountIdempotentInstruction(
+              wallet.publicKey,
+              ataOut,
+              wallet.publicKey,
+              tokenOut.mint,
+            ),
+          ]
+          : []),
+        ...innerTransaction.instructions,
+        ...(direction === 'sell' ? [createCloseAccountInstruction(ataIn, wallet.publicKey, wallet.publicKey)] : []),
+      ],
+    }).compileToV0Message();
 
-    if (this.isJito) {
-      logger.debug(`Executing Jito ${direction} transaction...`);
-
-      let latestBlockhash = await this.connection.getLatestBlockhash();
-      const messageV0 = getTransactionSwapMessage(direction, latestBlockhash, wallet);
-
-      const transaction = new VersionedTransaction(messageV0);
-      transaction.sign([wallet, ...innerTransaction.signers]);
-
-      const signature = bs58.encode(transaction.signatures[0]);
-      const newBundle = new Bundle([], JITO_BUNDLE_TRANSACTION_LIMIT);
-      let bundles = [newBundle];
-
-      let bundle = newBundle.addTransactions(
-        transaction as VersionedTransaction,
-      );
-
-      if (isError(bundle)) {
-        logger.error({ bundle }, `add tx to jito bundle error: ${bundle.message}`);
-        throw bundle;
-      }
-
-      const randomTipAccount = this.tipAccounts[Math.floor(Math.random() * this.tipAccounts.length)];
-
-      bundle = bundle.addTipTx(
-        wallet,
-        JITO_FEE_LAMPORTS,
-        new PublicKey(randomTipAccount),
-        latestBlockhash.blockhash,
-      );
-
-      if (isError(bundle)) {
-        logger.error({ bundle }, `Add tip tx to Jito bundle error: ${bundle.message}`);
-        throw bundle;
-      }
-
-      const resp = await this.jitoClient.sendBundle(bundles[0]);
-      logger.debug(`Sent Jito bundle id: ${resp}`);
-      logger.debug({ signature }, 'Confirming transaction...');
-
-      const confirmation = await this.connection.confirmTransaction(
-        {
-          signature,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-          blockhash: latestBlockhash.blockhash,
-        },
-        this.connection.commitment,
-      );
-
-      return { confirmed: !confirmation.value.err, signature, error: confirmation.value.err };
-    }
-
-    // if not jito, send as usual
-    let latestBlockhash = await this.connection.getLatestBlockhash();
-    const messageV0 = getTransactionSwapMessage(direction, latestBlockhash, wallet);
     const transaction = new VersionedTransaction(messageV0);
     transaction.sign([wallet, ...innerTransaction.signers]);
 
-    const signature = await this.connection.sendRawTransaction(transaction.serialize(), {
-      preflightCommitment: this.connection.commitment,
-    });
-
-    const confirmation = await this.connection.confirmTransaction(
-      {
-        signature,
-        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-        blockhash: latestBlockhash.blockhash,
-      },
-      this.connection.commitment,
-    );
-
-    return { confirmed: !confirmation.value.err, signature, error: confirmation.value.err };
+    return this.txExecutor.executeAndConfirm(transaction, wallet, latestBlockhash);
   }
 
   private async filterMatch(poolKeys: LiquidityPoolKeysV4) {
@@ -462,7 +371,10 @@ export class Bot {
           matchCount++;
 
           if (this.config.consecutiveMatchCount <= matchCount) {
-            logger.debug(`${poolKeys.baseMint.toString()} - Filter match ${matchCount}/${this.config.consecutiveMatchCount}`);
+            logger.debug(
+              { mint: poolKeys.baseMint.toString() },
+              `Filter match ${matchCount}/${this.config.consecutiveMatchCount}`,
+            );
             return true;
           }
         } else {
@@ -509,15 +421,10 @@ export class Bot {
           slippage,
         }).amountOut;
 
-        logger.debug(`${poolKeys.baseMint.toString()} - Current: ${amountOut.toFixed()} | Take profit: ${takeProfit.toFixed()} | Stop loss: ${stopLoss.toFixed()}`,);
-
-        if (SKIP_SELLING_IF_LOST_90PERCENT) {
-          const stopSellingFraction = this.config.quoteAmount.mul(90).numerator.div(new BN(100)); // 90%
-          const stopSellingAmount = new TokenAmount(this.config.quoteToken, stopSellingFraction, true);
-          if (amountOut.lt(stopSellingAmount)) {
-            return true
-          }
-        }
+        logger.debug(
+          { mint: poolKeys.baseMint.toString() },
+          `Take profit: ${takeProfit.toFixed()} | Stop loss: ${stopLoss.toFixed()} | Current: ${amountOut.toFixed()}`,
+        );
 
         if (amountOut.lt(stopLoss)) {
           break;
