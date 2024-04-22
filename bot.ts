@@ -249,6 +249,8 @@ export class Bot {
       const shouldStopSelling = await this.priceMatch(tokenAmountIn, poolKeys);
       if (shouldStopSelling) {
         logger.info(`${rawAccount.mint} - received stop selling signal. Price dropped more than 90%`)
+        this.sellExecutionCount--;
+        return
       }
 
       for (let i = 0; i < this.config.maxSellRetries; i++) {
