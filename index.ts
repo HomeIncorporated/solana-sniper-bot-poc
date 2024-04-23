@@ -44,7 +44,7 @@ import {
   CUSTOM_FEE,
   FILTER_CHECK_INTERVAL,
   FILTER_CHECK_DURATION,
-  CONSECUTIVE_FILTER_MATCHES,
+  CONSECUTIVE_FILTER_MATCHES, SKIP_SELLING_IF_LOST_90PERCENT, TRAILING_STOP,
 } from './helpers';
 import { version } from './package.json';
 import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
@@ -112,6 +112,8 @@ function printDetails(wallet: Keypair, quoteToken: Token, bot: Bot) {
   logger.info(`Price check duration: ${botConfig.priceCheckDuration} ms`);
   logger.info(`Take profit: ${botConfig.takeProfit}%`);
   logger.info(`Stop loss: ${botConfig.stopLoss}%`);
+  logger.info(`Skip selling on 90% lost: ${SKIP_SELLING_IF_LOST_90PERCENT}`);
+  logger.info(`Trailing stop: ${TRAILING_STOP} (trailing ${STOP_LOSS}%)`);
 
   logger.info('- Snipe list -');
   logger.info(`Snipe list: ${botConfig.useSnipeList}`);

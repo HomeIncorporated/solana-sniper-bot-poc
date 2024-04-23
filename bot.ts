@@ -14,15 +14,40 @@ import {
   RawAccount,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
-import { Liquidity, LiquidityPoolKeysV4, LiquidityStateV4, Percent, Token, TokenAmount } from '@raydium-io/raydium-sdk';
+import {
+  AmountSide,
+  Liquidity,
+  LiquidityPoolKeysV4,
+  LiquidityStateV4,
+  Percent,
+  Price,
+  Token,
+  TokenAmount,
+} from '@raydium-io/raydium-sdk';
 import { MarketCache, PoolCache, SnipeListCache } from './cache';
 import { PoolFilters } from './filters';
 import { TransactionExecutor } from './transactions';
-import { createPoolKeys, logger, NETWORK, sleep } from './helpers';
+import {
+  createPoolKeys,
+  logger,
+  NETWORK,
+  SKIP_SELLING_IF_LOST_90PERCENT,
+  sleep,
+  TRAILING_STOP,
+} from './helpers';
 import { Mutex } from 'async-mutex';
 import BN from 'bn.js';
 import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
 import { JitoTransactionExecutor } from './transactions/jito-rpc-transaction-executor';
+
+interface TrailingStops {
+  // mint address : highest token price (amount)
+  [key: string]: TokenAmount;
+}
+
+interface ScaleOutTargets {
+  [key: string]: { price: BN, amountToSell: TokenAmount, processing: boolean, sold: boolean }[];
+}
 
 export interface BotConfig {
   wallet: Keypair;
@@ -65,6 +90,8 @@ export class Bot {
   private sellExecutionCount = 0;
   public readonly isWarp: boolean = false;
   public readonly isJito: boolean = false;
+  private readonly trailingStops: TrailingStops;
+  // private readonly scaleOutTargets: ScaleOutTargets;
 
   constructor(
     private readonly connection: Connection,
@@ -87,6 +114,8 @@ export class Bot {
       this.snipeListCache = new SnipeListCache();
       this.snipeListCache.init();
     }
+
+    this.trailingStops = {};
   }
 
   async validate() {
@@ -214,6 +243,8 @@ export class Bot {
       const tokenIn = new Token(TOKEN_PROGRAM_ID, poolData.state.baseMint, poolData.state.baseDecimal.toNumber());
       const tokenAmountIn = new TokenAmount(tokenIn, rawAccount.amount, true);
 
+      logger.debug(`${rawAccount.mint.toString()} - top sell called. Amount: ${new TokenAmount(tokenIn, rawAccount.amount, true).toFixed()}`)
+
       if (tokenAmountIn.isZero()) {
         logger.info({ mint: rawAccount.mint.toString() }, `Empty balance, can't sell`);
         return;
@@ -227,7 +258,38 @@ export class Bot {
       const market = await this.marketStorage.get(poolData.state.marketId.toString());
       const poolKeys: LiquidityPoolKeysV4 = createPoolKeys(new PublicKey(poolData.id), poolData.state, market);
 
-      await this.priceMatch(tokenAmountIn, poolKeys);
+      const price = new Price(tokenIn, tokenAmountIn.raw, this.config.quoteToken, this.config.quoteAmount.raw)
+      logger.info(`${rawAccount.mint.toString()} - token price is ${price.toFixed()}`)
+      logger.debug(`${rawAccount.mint.toString()} - set Scale Out values: +50% number price is: ${price.raw.mul(50).numerator.div(new BN(100)).toNumber()}`)
+      logger.debug(`${rawAccount.mint.toString()} - set Scale Out values: +50% string price is: ${price.raw.mul(50).numerator.div(new BN(100)).toString(10)}`)
+
+
+      if (TRAILING_STOP && !this.trailingStops[rawAccount.mint.toString()]) {
+        this.trailingStops[rawAccount.mint.toString()] = this.config.quoteAmount
+      }
+
+      // if (SCALE_OUT && !this.scaleOutTargets[rawAccount.mint.toString()]) {
+      //   logger.debug(`${rawAccount.mint.toString()} - set Scale Out values: price is: ${price.toFixed()}`)
+      //   logger.debug(`${rawAccount.mint.toString()} - set Scale Out values: +30% number price is: ${price.raw.mul(30).numerator.div(new BN(100)).toNumber()}`)
+      //   logger.debug(`${rawAccount.mint.toString()} - set Scale Out values: +30% string price is: ${price.raw.mul(30).numerator.div(new BN(100)).toString(10)}`)
+      //   logger.debug(`${rawAccount.mint.toString()} - set Scale Out values: +50% number price is: ${price.raw.mul(50).numerator.div(new BN(100)).toNumber()}`)
+      //   logger.debug(`${rawAccount.mint.toString()} - set Scale Out values: +50% string price is: ${price.raw.mul(50).numerator.div(new BN(100)).toString(10)}`)
+      //   this.scaleOutTargets[rawAccount.mint.toString()] = [
+      //     {
+      //       price:  price.raw.mul(30).numerator.div(new BN(100)),
+      //       amountToSell: new TokenAmount(this.config.quoteToken, this.config.quoteAmount.mul(25).numerator.div(new BN(100)), true),
+      //       processing: false,
+      //       sold: false,
+      //     },
+      //   ];
+      // }
+
+      const shouldStopSelling = await this.priceMatch(tokenAmountIn, poolKeys);
+      if (shouldStopSelling) {
+        logger.info(`${rawAccount.mint} - received stop selling signal. Price dropped more than 90%`)
+        this.sellExecutionCount--;
+        return
+      }
 
       for (let i = 0; i < this.config.maxSellRetries; i++) {
         try {
@@ -236,13 +298,19 @@ export class Bot {
             `Send sell transaction attempt: ${i + 1}/${this.config.maxSellRetries}`,
           );
 
+          // let scaleOutAmountIn = tokenAmountIn
+          // if (SCALE_OUT) {
+          //   const activeScaleOutTarget = this.scaleOutTargets[rawAccount.mint.toString()].find(target => target.processing)
+          //   scaleOutAmountIn = activeScaleOutTarget.amountToSell
+          // }
+
           const result = await this.swap(
             poolKeys,
             accountId,
             this.config.quoteAta,
             tokenIn,
             this.config.quoteToken,
-            tokenAmountIn,
+            tokenAmountIn, // scaleOutAmountIn
             this.config.sellSlippage,
             this.config.wallet,
             'sell',
@@ -258,6 +326,19 @@ export class Bot {
               },
               `Confirmed sell tx`,
             );
+
+            // if (SCALE_OUT) {
+            //   const scaleOutTargets = this.scaleOutTargets[rawAccount.mint.toString()]
+            //   const activeScaleOutTarget = scaleOutTargets.find(target => target.processing)
+            //   activeScaleOutTarget.processing = false
+            //   activeScaleOutTarget.sold = true
+            //
+            //
+            //   if (scaleOutTargets.some(target => !target.sold)) {
+            //     logger.info(`${rawAccount.mint.toString()} - target of scale out is sold. Selling next target.`)
+            //     this.sell(accountId, rawAccount)
+            //   }
+            // }
             break;
           }
 
@@ -421,10 +502,60 @@ export class Bot {
           slippage,
         }).amountOut;
 
-        logger.debug(
-          { mint: poolKeys.baseMint.toString() },
-          `Take profit: ${takeProfit.toFixed()} | Stop loss: ${stopLoss.toFixed()} | Current: ${amountOut.toFixed()}`,
-        );
+        const price = Liquidity.getRate(poolInfo)
+        logger.debug(`${poolKeys.baseMint.toString()} - price is ${price.toFixed()}`)
+
+        // if (SCALE_OUT) {
+        //   const targets = this.scaleOutTargets[poolKeys.baseMint.toString()];
+        //   targets.forEach(target => {
+        //     if (!target.sold && amountOut.gt(this.config.quoteAmount)) {
+        //       const gainFraction = this.config.quoteAmount.mul(target.percentToSell).numerator.div(new BN(100));
+        //       const gainAmount = new TokenAmount(this.config.quoteToken, gainFraction, true);
+        //
+        //       // const trailingStopLoss = this.trailingStops[poolKeys.baseMint.toString()].subtract(trailingLossAmount);
+        //
+        //       const amountToSell = this.config.quoteAmount.mul(new BN(target.percentToSell));
+        //       target.processing = true;
+        //       break;
+        //     }
+        //   });
+        // }
+
+        if (TRAILING_STOP) {
+          if (this.trailingStops[poolKeys.baseMint.toString()].lt(amountOut)) {
+            // new price higher than saved, update value
+            logger.trace(`${poolKeys.baseMint.toString()} - Trailing stop price is higher than before, let's update trailing value. Set ${amountOut.toFixed()}`)
+            this.trailingStops[poolKeys.baseMint.toString()] = amountOut as TokenAmount
+          }
+
+          const trailingLossFraction = this.trailingStops[poolKeys.baseMint.toString()].mul(this.config.stopLoss).numerator.div(new BN(100));
+          const trailingLossAmount = new TokenAmount(this.config.quoteToken, trailingLossFraction, true);
+          const trailingStopLoss = this.trailingStops[poolKeys.baseMint.toString()].subtract(trailingLossAmount);
+
+          logger.trace(`${poolKeys.baseMint.toString()} - Trailing stop loss value: ${trailingStopLoss.toFixed()}`)
+
+          if (amountOut.lt(trailingStopLoss)) {
+            logger.trace(`${poolKeys.baseMint.toString()} - Trailing stop loss triggered: ${amountOut.toFixed()} less than ${trailingStopLoss.toFixed()}`)
+
+            delete this.trailingStops[poolKeys.baseMint.toString()]
+            break;
+          }
+        }
+
+        const priceIncrease = amountOut.sub(this.config.quoteAmount);
+        const percentageIncrease = priceIncrease.mul(new BN(100)).div(this.config.quoteAmount);
+
+        const formattedPercentageIncrease = percentageIncrease.toFixed(2);
+
+        logger.debug(`${poolKeys.baseMint.toString()} - Current: ${amountOut.toFixed()} (${formattedPercentageIncrease}%) | Take profit: ${takeProfit.toFixed()} | Stop loss: ${stopLoss.toFixed()}`,);
+
+        if (SKIP_SELLING_IF_LOST_90PERCENT) {
+          const stopSellingFraction = this.config.quoteAmount.mul(90).numerator.div(new BN(100)); // 90%
+          const stopSellingAmount = new TokenAmount(this.config.quoteToken, stopSellingFraction, true);
+          if (amountOut.lt(stopSellingAmount)) {
+            return true
+          }
+        }
 
         if (amountOut.lt(stopLoss)) {
           break;
