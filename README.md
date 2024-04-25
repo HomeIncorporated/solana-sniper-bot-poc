@@ -1,5 +1,12 @@
 # Solana Trading Bot (Beta)
 
+## Private Sniper Solution Available!
+
+If you are looking for a robust and private solution for sniping tokens on the Solana blockchain, I offer specialized services tailored to meet your needs. Please contact me directly to discuss:
+
+- Discord: [MyProfile](https://discordapp.com/users/600250420480442390)
+- Telegram: [MyProfile](https://t.me/yobebka)
+
 The Solana Trading Bot is a software tool designed to automate the buying and selling of tokens on the Solana blockchain.
 It is configured to execute trades based on predefined parameters and strategies set by the user.
 
