@@ -6,6 +6,7 @@ If you are looking for a robust and private solution for sniping tokens on the S
 
 - [Discord](https://discordapp.com/users/600250420480442390)
 - [Telegram](https://t.me/yobebka)
+- [Jop Ultimate Bots channel](https://discord.gg/hmqBbT4ASW)
 
 The Solana Trading Bot is a software tool designed to automate the buying and selling of tokens on the Solana blockchain.
 It is configured to execute trades based on predefined parameters and strategies set by the user.
@@ -156,7 +157,7 @@ To collect more information on an issue, please change `LOG_LEVEL` to `debug`.
 [![](https://img.shields.io/discord/1201826085655023616?color=5865F2&logo=Discord&style=flat-square)](https://discord.gg/xYUETCA2aP)
 
 - If you want to leave a tip, you can send it to the following address:
-  `7gm6BPQrSBaTAYaJheuRevBNXcmKsgbkfBCVSjBnt9aP`
+  `D4zcora6XSv57nFNXBfkA5CMhu2GWrAXGQQ1CpAYG4FA`
 
 - If you need custom features or assistance, feel free to contact the admin team on discord for dedicated support.
 
